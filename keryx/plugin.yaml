@@ -1,0 +1,142 @@
+name: keryx
+version: 0.1.0
+manifest_version: 2
+api_version: 1
+description: >-
+  Outbound phone calls from your own phone. Hermes writes a brief and calls place_call; after you
+  approve, your phone dials over Bluetooth (the laptop acts as a hands-free car kit), the plugin plays
+  an AI-disclosure line, and a realtime speech-to-speech model holds the conversation. When the call
+  ends, the outcome and transcript go back to Hermes. No Twilio, no telephony account.
+author: hsyvy
+license: MIT
+requires_hermes: ">=0.23.0"
+tags: [telephony, voice, realtime, bluetooth]
+kind: standalone
+platforms:
+  - linux
+
+provides_tools:
+  - place_call
+provides_hooks:
+  - pre_tool_call
+  - agent_loop_stopped
+
+python_dependencies:
+  - "websockets>=13,<17"
+  - "numpy>=1.24,<3"
+
+# Disclosure for catalog reviewers: what this plugin touches outside Hermes.
+#  - Network: wss://api.openai.com/v1/realtime or wss://api.openai.com/v1/live/sessions (live call
+#    audio both ways, depending on voice_engine); https://api.openai.com/v1/audio/speech (renders the
+#    fixed disclosure line once, then cached); with voice_engine openai-live, one
+#    https://api.openai.com/v1/responses request after a call to write an outcome the model did not report.
+#  - Devices: places real phone calls on the user's SIM through a paired phone (Bluetooth HFP via
+#    PipeWire's telephony D-Bus API, or oFono); captures and plays call audio while a call is up.
+#  - Shell commands: busctl (telephony D-Bus), pw-dump, pw-record, pw-play, pw-link, pw-cli (two
+#    temporary virtual audio nodes that exist only during a call), espeak-ng (offline fallback for the
+#    disclosure line). No other processes.
+#  - Background work: audio and a call watcher run only during a call the user approved; nothing
+#    listens otherwise.
+#  - Storage: <HERMES_HOME>/plugin-data/keryx/ (call log SQLite, cached disclosure audio, and call
+#    recordings only when `record: true`).
+#  - Credentials: OPENAI_API_KEY through Hermes's secret route (agent.secret_scope.get_secret).
+#  - Safety in code, not prompts: Hermes approval before every dial (single use), emergency, short-code
+#    and premium numbers blocked, quiet hours, hourly rate limit, hard 5-minute cap, AI disclosure
+#    played by the plugin.
+
+config_schema:
+  transport:
+    type: str
+    default: bluetooth-linux
+    choices: [bluetooth-linux, speakerphone]
+    description: "How calls are placed: your phone over Bluetooth, or a phone on speaker next to the laptop."
+  voice_engine:
+    type: str
+    default: openai-realtime
+    choices: [openai-realtime, openai-live]
+    description: "Voice model that holds the conversation: OpenAI Realtime API, or GPT-Live (full-duplex; tools run through a backend model)."
+  openai_api_key:
+    type: secret
+    env: OPENAI_API_KEY
+    description: "OpenAI API key for the Realtime API and the disclosure line."
+  realtime_model:
+    type: str
+    default: gpt-realtime
+    description: "Realtime model id."
+  live_model:
+    type: str
+    default: gpt-live-1
+    description: "GPT-Live model id (used when voice_engine is openai-live)."
+  live_backend_model:
+    type: str
+    default: gpt-5.4-mini
+    description: "Backend model GPT-Live delegates to; it runs ask_principal, press_keys and end_call."
+  voice:
+    type: str
+    default: marin
+    description: "Voice for the call (also used to render the disclosure line)."
+  principal_name:
+    type: str
+    default: ""
+    description: "Your name, as the assistant introduces you (\"calling on behalf of ...\")."
+  default_country_code:
+    type: str
+    default: "+91"
+    description: "Country code used when a number has no leading +."
+  disclosure_text:
+    type: str
+    default: "Hi, this is an AI assistant calling on behalf of {principal}."
+    description: "Played by the plugin as soon as the call connects. {principal} is replaced with principal_name."
+  disclosure_audio_file:
+    type: str
+    default: ""
+    description: "Optional WAV file to play instead of synthesizing disclosure_text."
+  max_call_seconds:
+    type: int
+    default: 300
+    description: "Hard cap on a call, in seconds (cannot exceed 300)."
+  ring_timeout_seconds:
+    type: int
+    default: 45
+    description: "Give up if nobody answers within this many seconds."
+  quiet_hours:
+    type: str
+    default: "21:00-09:00"
+    description: "Local time window when no calls are placed. Empty to disable."
+  timezone:
+    type: str
+    default: ""
+    description: "IANA timezone for quiet hours (empty = this computer's)."
+  max_calls_per_hour:
+    type: int
+    default: 6
+    description: "Rate limit on dialed calls."
+  allowed_numbers:
+    type: list
+    default: []
+    description: "If non-empty, only these numbers (E.164) may be called."
+  blocked_numbers:
+    type: list
+    default: []
+    description: "Extra numbers or prefixes (E.164) that may never be called."
+  record:
+    type: bool
+    default: false
+    description: "Save call audio (WAV) next to the call log. Disclose recording in disclosure_text if you enable this."
+  readonly_tools:
+    type: list
+    default: []
+    description: "Hermes tools the principal resolver may call mid-call to answer questions (read-only ones only, e.g. a calendar lookup)."
+  principal_timeout_seconds:
+    type: int
+    default: 30
+    description: "How long the callee is kept waiting while you are asked a question."
+  bluetooth_device:
+    type: str
+    default: ""
+    description: "Phone's Bluetooth address (AA:BB:CC:DD:EE:FF). Empty = the only connected phone."
+  telephony_bus:
+    type: str
+    default: user
+    choices: [user, system]
+    description: "D-Bus with the oFono-compatible API: 'user' for PipeWire's built-in telephony, 'system' for oFono."
